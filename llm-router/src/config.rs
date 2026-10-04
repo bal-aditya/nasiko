@@ -108,6 +108,9 @@ pub struct GatewayConfig {
     /// Directory for the MiniLM ONNX cache (`FASTEMBED_CACHE_DIR` also works).
     /// Empty ⇒ fastembed's default (`.fastembed_cache` / `HF_HOME`).
     pub minilm_cache_dir: String,
+    /// Level 3 tier picker. `thompson` (default) is the existing bandit. `cards` shortlists
+    /// by purpose and scores an ex-ante cost forecast; learned cells only calibrate quality.
+    pub tier_selector: crate::routing::TierSelector,
 
     /// Fleet-wide kill switch for payload compression. Compression is opted into **per agent**
     /// (`agents.compress_enabled`); this only lets an operator stop all of it at once without
@@ -195,6 +198,7 @@ impl Default for GatewayConfig {
             salience_high_threshold: 0.80,
             request_type_backend: crate::routing::RequestTypeBackend::Regex,
             minilm_cache_dir: String::new(),
+            tier_selector: crate::routing::TierSelector::Thompson,
             compress_kill_switch: true,
             compress_min_bytes: 2048,
             compress_types: nasiko_compress::TypeMask::DEFAULT,
@@ -290,6 +294,9 @@ impl GatewayConfig {
             minilm_cache_dir: env_first(
                 &["ROUTER_MINILM_CACHE", "FASTEMBED_CACHE_DIR"],
                 &d.minilm_cache_dir,
+            ),
+            tier_selector: crate::routing::TierSelector::parse(
+                &std::env::var("ROUTER_SELECTOR").unwrap_or_default(),
             ),
             compress_kill_switch: env_flag("TOKEN_COMPRESS_ENABLED", true),
             compress_min_bytes: env_usize("TOKEN_COMPRESS_MIN_BYTES", 2048),

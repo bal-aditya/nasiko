@@ -10,14 +10,15 @@
 //! query + provider ──► classify() ──► Tier ──► registry::model_for(provider, Tier) ──► model
 //! ```
 //!
-//! The [classifier](classifier::classify) buckets the query into a request type and
-//! Thompson-samples a [`Tier`] over the provider's learned quality [cells](cells); feedback
-//! from the user's next turn ([`classifier::signal`]) is folded back into those cells, so the
-//! router learns which tier suffices for which kind of query. See [`route_model`].
+//! The [classifier](classifier::classify) buckets the query into a request type, then
+//! picks a [`Tier`]: Thompson by default, or opt-in [model cards](cards) (`ROUTER_SELECTOR=cards`)
+//! that shortlist by purpose and forecast cost. Feedback from the user's next turn
+//! ([`classifier::signal`]) is folded into [cells](cells) so later picks calibrate.
 
 pub mod attribution;
 pub mod boundary;
 pub mod cache;
+pub mod cards;
 pub mod catalog;
 pub mod cells;
 pub mod classifier;
@@ -34,6 +35,7 @@ mod salience_classifier;
 pub use boundary::{BoundarySignals, Mode, Phase};
 pub use cache::{CachedDecision, DecisionCache, NoopCache, RedisCache};
 pub use cells::{CellStore, InMemoryCellStore, PgCellStore};
+pub use cards::{ModelPurpose, TierSelector};
 pub use classifier::{RequestType, RequestTypeBackend, Tier, classify, signal};
 pub use minilm::OnnxMiniLm;
 pub use registry::{PgTierRegistry, TierRegistry};
@@ -90,6 +92,8 @@ pub struct RouteInputs<'a> {
     pub request_type_backend: RequestTypeBackend,
     /// Loaded ONNX MiniLM session. `None` unless startup succeeded with `minilm`.
     pub request_type_encoder: Option<&'a minilm::OnnxMiniLm>,
+    /// Level 3 tier picker. Default Thompson; `cards` is purpose + ex-ante cost.
+    pub tier_selector: TierSelector,
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -266,6 +270,7 @@ pub async fn route_model(
                     &mut rng,
                     inputs.request_type_backend,
                     inputs.request_type_encoder,
+                    inputs.tier_selector,
                 )
             };
             // Per-config tier override takes priority over the global registry.
@@ -548,6 +553,7 @@ mod tests {
             query: Some("hello"),
             request_type_backend: RequestTypeBackend::Regex,
             request_type_encoder: None,
+            tier_selector: TierSelector::Thompson,
         }
     }
 

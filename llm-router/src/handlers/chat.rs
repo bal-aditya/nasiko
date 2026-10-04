@@ -485,6 +485,7 @@ pub(crate) async fn resolve_routed_request(
             query: signals.query.as_deref(),
             request_type_backend: ctx.cfg.request_type_backend,
             request_type_encoder: ctx.request_type_encoder.as_deref(),
+            tier_selector: ctx.cfg.tier_selector,
         },
     )
     .await;

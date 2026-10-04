@@ -113,6 +113,7 @@ impl LlmRouterCtx {
             gemini_api_base = %cfg.gemini_api_base,
             llm_gateway_base_url = %cfg.llm_gateway_base_url,
             request_type_backend = cfg.request_type_backend.as_str(),
+            tier_selector = cfg.tier_selector.as_str(),
             "llm-router: initializing with effective GatewayConfig"
         );
         let cache = Arc::new(ConfigCache::new(Duration::from_secs(
@@ -132,6 +133,11 @@ impl LlmRouterCtx {
         let cfg = Arc::new(cfg);
         let salience_gate = build_salience_gate(&cfg);
         let request_type_encoder = build_request_type_encoder(&cfg);
+        tracing::info!(
+            target: "nasiko::llm_router::startup",
+            selector = cfg.tier_selector.as_str(),
+            "llm-router: Level 3 selector (thompson = bandit arms; cards = purpose + ex-ante cost, cells calibrate)"
+        );
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         Self {
             db,
@@ -227,7 +233,7 @@ fn build_request_type_encoder(cfg: &GatewayConfig) -> Option<Arc<OnnxMiniLm>> {
             tracing::info!(
                 target: "nasiko::llm_router::startup",
                 cache = cfg.minilm_cache_dir.as_str(),
-                "llm-router: Level 3 MiniLM = ONNX all-MiniLM-L6-v2 (prototype cosine; Thompson + cost blend unchanged)"
+                "llm-router: Level 3 MiniLM = ONNX all-MiniLM-L6-v2 (prototype cosine; tier picker is ROUTER_SELECTOR)"
             );
             Some(Arc::new(model))
         }

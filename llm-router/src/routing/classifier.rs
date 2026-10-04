@@ -14,12 +14,10 @@
 //!
 //! 1. **Request type** — regex vote-count (default) or ONNX MiniLM buckets the query
 //!    into a [`RequestType`]. This step does **not** pick a model.
-//! 2. **Tier** — the three tiers are treated as bandit *arms*. [`pick_model_thompson`]
-//!    Thompson-samples a quality estimate per tier from a Beta posterior — seeded by a
-//!    cold-start prior (stronger/on-strength tiers start higher) and updated by learned
-//!    [`Cell`]s — then blends it with a normalized cost term (`DEFAULT_W_QUALITY` /
-//!    `DEFAULT_W_COST`) and takes the argmax. Same bandit whether request-type came
-//!    from regex or MiniLM.
+//! 2. **Tier** — default [`pick_model_thompson`]: bandit arms with fixed list-price
+//!    weights. Opt-in [`super::cards::pick_model_cards`] (`ROUTER_SELECTOR=cards`)
+//!    shortlists by purpose (chat / reason / code) and scores a forecast of prompt +
+//!    output + hidden reasoning tokens; learned [`Cell`]s only calibrate quality.
 //!
 //! The learned [`Cell`]s come from real feedback: the router credits a tier's quality from
 //! the user's next-turn reaction ([`signal`]), persisted per provider by the
@@ -33,12 +31,12 @@ use std::collections::HashMap;
 use rand::Rng;
 use rand_distr::{Beta, Distribution};
 
+use super::cards::{self, TierSelector};
 use super::minilm;
 use super::patterns::{CATEGORY_PATTERNS, NEGATIVE_SIGNALS, POSITIVE_SIGNALS};
 
-/// Which Level-3 request-type classifier to run. Tier selection (Thompson sampling
-/// + cost blend) is the same either way; only the bucket that keys the bandit cells
-/// changes.
+/// Which Level-3 request-type classifier to run. Tier selection is separate
+/// ([`super::cards::TierSelector`]); only the bucket that keys cells / purpose changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RequestTypeBackend {
     /// Regex vote-count (litellm Adaptive Router port). The default — no new
@@ -365,6 +363,7 @@ pub fn pick_model_thompson<R: Rng + ?Sized>(
 /// `rng` drives Thompson exploration (entropy in production, seeded in tests).
 /// `backend` selects the request-type classifier (`regex`, `minilm`, or `hash`).
 /// `onnx` is the loaded MiniLM session when `backend` is MiniLm.
+/// `selector` is Thompson (default) or model cards (purpose + ex-ante cost).
 pub fn classify<R: Rng + ?Sized>(
     query: &str,
     provider: &str,
@@ -372,9 +371,15 @@ pub fn classify<R: Rng + ?Sized>(
     rng: &mut R,
     backend: RequestTypeBackend,
     onnx: Option<&minilm::OnnxMiniLm>,
+    selector: TierSelector,
 ) -> (Tier, RequestType) {
     let request_type = classify_request_type_with(query, backend, onnx);
-    let tier = pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng);
+    let tier = match selector {
+        TierSelector::Thompson => {
+            pick_model_thompson(cells, request_type, DEFAULT_W_QUALITY, DEFAULT_W_COST, rng)
+        }
+        TierSelector::Cards => cards::pick_model_cards(query, request_type, cells),
+    };
     let preview: String = query.chars().take(120).collect();
     tracing::info!(
         target: "nasiko::llm_router::classifier",
@@ -383,9 +388,10 @@ pub fn classify<R: Rng + ?Sized>(
         query_preview = %preview,
         request_type = %request_type.as_str(),
         request_type_backend = backend.as_str(),
+        tier_selector = selector.as_str(),
         learned_cells = cells.len(),
         classified_tier = ?tier,
-        "classifier: classified query into request type and Thompson-sampled a model tier"
+        "classifier: classified query into request type and selected a model tier"
     );
     (tier, request_type)
 }
@@ -646,8 +652,26 @@ mod tests {
             &mut rng,
             RequestTypeBackend::Regex,
             None,
+            TierSelector::Thompson,
         );
         assert_eq!(rt, RequestType::CodeGeneration);
         assert!(matches!(tier, Tier::Tier1 | Tier::Tier2 | Tier::Tier3));
+    }
+
+    #[test]
+    fn cards_selector_sends_reasoning_to_tier1() {
+        let cells = CellMap::new();
+        let mut rng = StdRng::seed_from_u64(3);
+        let (tier, rt) = classify(
+            "calculate the probability that it rains tomorrow",
+            "anthropic",
+            &cells,
+            &mut rng,
+            RequestTypeBackend::Regex,
+            None,
+            TierSelector::Cards,
+        );
+        assert_eq!(rt, RequestType::AnalyticalReasoning);
+        assert_eq!(tier, Tier::Tier1);
     }
 }
